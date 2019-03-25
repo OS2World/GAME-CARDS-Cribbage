@@ -1,0 +1,181 @@
+(************************************************************************)
+
+{$IFDEF LOGGINGON}
+ FUNCTION OpenLogFile(VAR LogFile : TEXTFILE) : BOOLEAN;
+     (* function used to open the log file (if analyze logging turned on) *)
+
+    VAR FnAndStr : STRING[160];
+
+  BEGIN (*openlogfile*)
+   FnAndStr := Application.EXEName;
+   FnAndStr := Copy(FnAndStr,1,Length(FnAndStr)-3) + 'LOG';
+   AssignFile(LogFile, FnAndStr);
+   IF FileExists(FnAndStr)
+    THEN {$I-} Append(LogFile) {$I+}
+   ELSE {$I-} Rewrite(LogFile); {$I+}
+   Result := IOResult = 0;
+  END; (*openlogfile*)
+{$ENDIF}
+
+(************************************************************************)
+
+ PROCEDURE AnalyzeHandForDiscards(Hnd : TCARDHAND);
+     (* procedure analyzes hand and recommends discards (computer discards) *)
+     (*                                                                     *)
+     (* NOTE: Some places of this analysis seem incomplete (see N:=1 code). *)
+     (* - My feeling, should be checking for 7's if have 8's.               *)
+     (* Somehow, I feel some stuff got lost in the conversion from the      *)
+     (*  basic code (or possibly in attempting to lower the number of       *)
+     (*  GOTO's used).                                                      *)
+
+    LABEL L1, L2, L3, L4, L5, L6, L7;
+
+    VAR V                  : E15X7;
+        I, J, K, L, N, P,
+        B9, C9, P9, Z9, ZZ : INTEGER;
+        TmpH               : TCARDHAND;
+        II, JJ             : ARRAY[1..15] OF INTEGER;
+       {$IFDEF LOGGINGON}
+        LogFile            : TEXTFILE;
+        LogOpen            : BOOLEAN;
+        iSuit              : INTEGER;
+        TmpC               : CHAR;
+       {$ENDIF}
+
+  BEGIN (*analyzehandfordiscards*)
+  {$IFDEF LOGGINGON}
+   LogOpen := OpenLogFile(LogFile);
+   IF LogOpen
+    THEN BEGIN // set up begining
+          Writeln(LogFile, '-----');
+          Write(LogFile, 'Hand -');
+          FOR I := 1 TO 6 DO
+           BEGIN {write out cards in hand}
+            iSuit := QC_GetCardSuit(Hnd[I]); TmpC := '?';
+            CASE iSuit OF
+             qs_Clubs    : TmpC := 'C';
+             qs_Diamonds : TmpC := 'D';
+             qs_Hearts   : TmpC := 'H';
+             qs_Spades   : TmpC := 'S';
+            END; {case}
+            Write(LogFile, ' ', QC_GetCardValue(Hnd[I]), TmpC);
+           END; {for i}
+          Writeln(LogFile);
+         END; {then}
+  {$ENDIF}
+   V := ConV;
+   P9 := 0;
+   FOR Z9 := 1 TO 15 DO
+    BEGIN {analyze and get points for each hand}
+     FOR I := 1 TO 4 DO
+      TmpH[I] := Hnd[V[Z9,I]];
+     Figure_Points(TmpH, FALSE, P);
+     V[Z9,7] := P;
+     IF P > P9 THEN P9 := P; // largest points so far
+    END; {z9 for}
+  {$IFDEF LOGGINGON}
+   IF LogOpen
+    THEN BEGIN // write out points
+          Writeln(LogFile, 'Points for each combination:');
+          FOR I := 1 TO 15 DO
+           Write(LogFile, ' ', I, ':', V[I,7]);
+          Writeln(LogFile);
+         END; {then}
+  {$ENDIF}
+   // see if more than one hand has the same (biggest) point total
+   J := 0;
+   FOR I := 1 TO 15 DO
+    IF V[I,7] = P9
+     THEN BEGIN {found our point total, mark in an array}
+           Inc(J); II[J] := I;
+          END; {then}
+   B9 := II[1];
+   IF J = 1 THEN GOTO L1; // only one hand with the biggest amount of points
+  {$IFDEF LOGGINGON}
+   IF LogOpen
+    THEN BEGIN {indicate more than one hand is high}
+          Writeln(LogFile, '** More than one hand with highest score.');
+          Writeln(LogFile, 'Hand combinations:');
+          FOR I := 1 TO J DO
+           Write(LogFile, ' ', II[I]);
+          Writeln(LogFile);
+         END; {then}
+  {$ENDIF}
+   C9 := 5;  ZZ := 1; GOTO L2; // check for hand with 5's in it
+   L3: C9 := 8;  ZZ := 2; N := 1; GOTO L2; // check for hand with 8's
+   L4: C9 := 7;  ZZ := 3; GOTO L2; // check for hand with 7's
+   L5: C9 := 11; ZZ := 4; GOTO L2; // check for hand with jack's
+   L6: C9 := 1;  ZZ := 5; GOTO L2; // check for hand with ace's
+   L7: B9 := II[Random(J)+1]; // all hands are equal, pick one...
+   GOTO L1;
+   L2: Application.ProcessMessages;
+  {$IFDEF LOGGINGON}
+   IF LogOpen
+    THEN Writeln(LogFile, 'Do we have ', C9, ' in one of the hands?');
+  {$ENDIF}
+   P9 := 0;
+   FOR I := 1 TO 15 DO
+    JJ[I] := 0;
+   FOR I := 1 TO J DO
+    BEGIN {find out if hand has high value card or not}
+     FOR K := 1 TO 4 DO
+      BEGIN {do we have it or not?}
+       L := V[II[I], K];
+       IF QC_GetCardValue(Hnd[L]) = C9
+        THEN BEGIN {inc card we have in array}
+              Inc(JJ[I]);
+              IF JJ[I] > P9 THEN P9 := JJ[I]; {more than one?}
+             END; {then}
+      END; {k for}
+    END; {i for}
+   K := 0;
+   FOR I := 1 TO J DO // more than one hand with our card in it?
+    IF JJ[I] = P9
+     THEN BEGIN {maybe}
+           Inc(K); B9 := II[I];
+          {$IFDEF LOGGINGON}
+           IF LogOpen
+            THEN Writeln(LogFile, ' - Yes: Hand ', B9, ' (index ', I, ')');
+          {$ENDIF}
+          END; {then}
+   IF K <> 1
+    THEN BEGIN {rebuild list of hands to choose from and look again}
+          IF K <> 0
+           THEN BEGIN {reset hands to look at list}
+                 FOR I := (J-1) DOWNTO 1 DO
+                  IF JJ[I] = P9 {0}
+                   THEN FOR L := I TO J-1 DO
+                         II[L] := II[L+1];
+                 J := K;
+                END; {then}
+         {$IFDEF LOGGINGON}
+          IF LogOpen
+           THEN BEGIN {show new hand to look through}
+                 Writeln(LogFile,'(...More than one hand left...)');
+                 Write(LogFile, ' Hand combinations left =');
+                 FOR I := 1 TO J DO
+                  Write(LogFile, ' ', II[I]);
+                 Writeln(LogFile);
+                END; {then}
+         {$ENDIF}
+          CASE ZZ OF // look for next card then
+           1 : GOTO L3;
+           2 : GOTO L4;
+           3 : GOTO L5;
+           4 : GOTO L6;
+           5 : GOTO L7;
+          END; {case}
+         END; {then}
+   // exit procedure
+   L1: RecDiscardIdx1 := V[B9,5]; RecDiscardIdx2 := V[B9,6];
+  {$IFDEF LOGGINGON}
+   IF LogOpen
+    THEN BEGIN {close it down}
+          Writeln(LogFile, 'Using hand combination: ',B9,'  Points=',V[B9,7]);
+          Close(LogFile);
+         END; {then}
+  {$ENDIF}
+  END; (*analyzehandfordiscards*)
+
+(************************************************************************)
+
